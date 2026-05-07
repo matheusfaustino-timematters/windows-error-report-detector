@@ -5,6 +5,7 @@ Win32 APIs, psutil, and time.sleep are mocked throughout — these tests run on
 any OS without a real Excel process.
 """
 
+import smtplib
 import sys
 import types
 from datetime import datetime, timedelta
@@ -91,10 +92,8 @@ class TestIsErrorDialog:
 class TestDatabase:
     def test_init_db_creates_table(self, mods):
         session = mods.database.init_db()
-        tables = session.execute(
-            mods.database.NotificationLog.__table__.metadata.sorted_tables[0].select().limit(0)
-        )
-        assert mods.database.NotificationLog.__tablename__ == "notification_log"
+        # If the table doesn't exist this query raises; success proves CREATE TABLE ran
+        session.query(mods.database.NotificationLog).count()
         session.close()
 
     def test_not_notified_initially(self, mods):
@@ -187,6 +186,76 @@ class TestSendTeams:
 
         with patch("urllib.request.urlopen", return_value=mock_resp):
             result = mods.notification.send_teams("Dialog", pid=1, runtime_min=5.0, reason="test")
+
+        assert result is False
+
+
+# ===========================================================================
+# src.notification — send_email
+# ===========================================================================
+class TestSendEmail:
+    def test_skips_when_not_configured(self, mods, caplog):
+        mods.config.CONFIG["smtp_host"] = ""
+        mods.config.CONFIG["email_to"]  = ""
+        result = mods.notification.send_email("Dialog", pid=1, runtime_min=5.0, reason="test")
+        assert result is False
+        assert "not configured" in caplog.text
+
+    def test_skips_when_host_missing(self, mods, caplog):
+        mods.config.CONFIG["smtp_host"] = ""
+        mods.config.CONFIG["email_to"]  = "ops@example.com"
+        result = mods.notification.send_email("Dialog", pid=1, runtime_min=5.0, reason="test")
+        assert result is False
+
+    def test_skips_when_to_missing(self, mods, caplog):
+        mods.config.CONFIG["smtp_host"] = "smtp.example.com"
+        mods.config.CONFIG["email_to"]  = ""
+        result = mods.notification.send_email("Dialog", pid=1, runtime_min=5.0, reason="test")
+        assert result is False
+
+    def test_sends_when_configured(self, mods):
+        mods.config.CONFIG["smtp_host"]     = "smtp.example.com"
+        mods.config.CONFIG["smtp_port"]     = 587
+        mods.config.CONFIG["smtp_user"]     = "user@example.com"
+        mods.config.CONFIG["smtp_password"] = "secret"
+        mods.config.CONFIG["email_from"]    = "watchdog@example.com"
+        mods.config.CONFIG["email_to"]      = "ops@example.com"
+
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__ = MagicMock(return_value=mock_smtp)
+        mock_smtp.__exit__  = MagicMock(return_value=False)
+
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            result = mods.notification.send_email("Dialog", pid=1, runtime_min=5.0, reason="test")
+
+        assert result is True
+        mock_smtp.sendmail.assert_called_once()
+
+    def test_multiple_recipients(self, mods):
+        mods.config.CONFIG["smtp_host"]  = "smtp.example.com"
+        mods.config.CONFIG["smtp_port"]  = 587
+        mods.config.CONFIG["smtp_user"]  = ""
+        mods.config.CONFIG["smtp_password"] = ""
+        mods.config.CONFIG["email_from"] = "watchdog@example.com"
+        mods.config.CONFIG["email_to"]   = "a@example.com, b@example.com"
+
+        mock_smtp = MagicMock()
+        mock_smtp.__enter__ = MagicMock(return_value=mock_smtp)
+        mock_smtp.__exit__  = MagicMock(return_value=False)
+
+        with patch("smtplib.SMTP", return_value=mock_smtp):
+            result = mods.notification.send_email("Dialog", pid=1, runtime_min=5.0, reason="test")
+
+        assert result is True
+        _, recipients, _ = mock_smtp.sendmail.call_args[0]
+        assert recipients == ["a@example.com", "b@example.com"]
+
+    def test_returns_false_on_smtp_error(self, mods):
+        mods.config.CONFIG["smtp_host"] = "smtp.example.com"
+        mods.config.CONFIG["email_to"]  = "ops@example.com"
+
+        with patch("smtplib.SMTP", side_effect=smtplib.SMTPException("connection refused")):
+            result = mods.notification.send_email("Dialog", pid=1, runtime_min=5.0, reason="test")
 
         assert result is False
 

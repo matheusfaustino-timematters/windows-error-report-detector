@@ -5,7 +5,7 @@ import psutil
 
 from src.config import CONFIG, DB_PATH, log
 from src.database import already_notified_today, init_db, record_notification
-from src.notification import send_teams
+from src.notification import send_email, send_teams
 from src.windows import get_windows_for_pid, is_error_dialog, is_hung_window
 
 
@@ -94,12 +94,15 @@ def run(once: bool = False) -> None:
                         )
                         continue
 
-                    sent = send_teams(
+                    kwargs = dict(
                         window_title=status["dialog_title"],
                         pid=proc.pid,
                         runtime_min=status["runtime_min"],
                         reason=status["reason"],
                     )
+                    teams_ok = send_teams(**kwargs)
+                    email_ok = send_email(**kwargs)
+                    sent = teams_ok or email_ok
 
                     if sent:
                         record_notification(

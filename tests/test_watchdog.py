@@ -57,6 +57,33 @@ def mods(tmp_path, monkeypatch):
 
 
 # ===========================================================================
+# src.windows — is_hung_window, get_windows_for_pid
+# ===========================================================================
+class TestWindowsHelpers:
+    def test_is_hung_window_returns_false_when_no_user32(self, mods):
+        with patch.object(mods.windows, "user32", None):
+            assert mods.windows.is_hung_window(42) is False
+
+    def test_is_hung_window_calls_api_and_returns_true(self, mods):
+        mock_user32 = MagicMock()
+        mock_user32.IsHungAppWindow.return_value = 1
+        with patch.object(mods.windows, "user32", mock_user32):
+            result = mods.windows.is_hung_window(42)
+        assert result is True
+        mock_user32.IsHungAppWindow.assert_called_once_with(42)
+
+    def test_is_hung_window_calls_api_and_returns_false(self, mods):
+        mock_user32 = MagicMock()
+        mock_user32.IsHungAppWindow.return_value = 0
+        with patch.object(mods.windows, "user32", mock_user32):
+            assert mods.windows.is_hung_window(42) is False
+
+    def test_get_windows_for_pid_returns_empty_without_win32(self, mods):
+        # HAS_WIN32 is False in all tests (win32gui suppressed by no_win32 fixture)
+        assert mods.windows.get_windows_for_pid(1234) == []
+
+
+# ===========================================================================
 # src.windows — is_error_dialog
 # ===========================================================================
 class TestIsErrorDialog:
@@ -323,3 +350,77 @@ class TestAnalyzeProcess:
         with patch("src.monitor.time.sleep"):
             result = mods.monitor.analyze_process(proc)
         assert result["is_stuck"] is False
+
+
+# ===========================================================================
+# src.monitor — run()
+# ===========================================================================
+class TestMonitorRun:
+    def _excel_proc(self, pid=100):
+        proc = MagicMock()
+        proc.pid = pid
+        proc.info = {"name": "EXCEL.EXE", "pid": pid}
+        return proc
+
+    def _stuck(self, title="Run-time error '1004'"):
+        return {"is_stuck": True, "dialog_title": title, "reason": "Error dialog", "runtime_min": 5.0}
+
+    def _ok(self):
+        return {"is_stuck": False, "dialog_title": "", "reason": "", "runtime_min": 5.0}
+
+    def test_run_once_no_excel_processes(self, mods):
+        with patch("src.monitor.psutil.process_iter", return_value=[]), \
+             patch("src.monitor.time.sleep"):
+            mods.monitor.run(once=True)  # must not raise
+
+    def test_run_once_ok_process_no_notification(self, mods):
+        proc = self._excel_proc()
+        with patch("src.monitor.psutil.process_iter", return_value=[proc]), \
+             patch("src.monitor.analyze_process", return_value=self._ok()), \
+             patch("src.monitor.send_teams") as mock_teams, \
+             patch("src.monitor.send_email") as mock_email, \
+             patch("src.monitor.time.sleep"):
+            mods.monitor.run(once=True)
+        mock_teams.assert_not_called()
+        mock_email.assert_not_called()
+
+    def test_run_once_stuck_sends_and_records(self, mods):
+        proc = self._excel_proc()
+        with patch("src.monitor.psutil.process_iter", return_value=[proc]), \
+             patch("src.monitor.analyze_process", return_value=self._stuck()), \
+             patch("src.monitor.send_teams", return_value=True), \
+             patch("src.monitor.send_email", return_value=False), \
+             patch("src.monitor.time.sleep"):
+            mods.monitor.run(once=True)
+        session = mods.database.init_db()
+        assert mods.database.already_notified_today(session, "Run-time error '1004'") is True
+        session.close()
+
+    def test_run_once_already_notified_skips_send(self, mods):
+        proc = self._excel_proc()
+        title = "Run-time error '1004'"
+        session = mods.database.init_db()
+        mods.database.record_notification(session, title, pid=99, runtime_minutes=1.0, reason="pre")
+        session.close()
+
+        with patch("src.monitor.psutil.process_iter", return_value=[proc]), \
+             patch("src.monitor.analyze_process", return_value=self._stuck(title)), \
+             patch("src.monitor.send_teams") as mock_teams, \
+             patch("src.monitor.send_email") as mock_email, \
+             patch("src.monitor.time.sleep"):
+            mods.monitor.run(once=True)
+        mock_teams.assert_not_called()
+        mock_email.assert_not_called()
+
+    def test_run_once_both_channels_fail_skips_record(self, mods):
+        proc = self._excel_proc()
+        title = "Overflow"
+        with patch("src.monitor.psutil.process_iter", return_value=[proc]), \
+             patch("src.monitor.analyze_process", return_value=self._stuck(title)), \
+             patch("src.monitor.send_teams", return_value=False), \
+             patch("src.monitor.send_email", return_value=False), \
+             patch("src.monitor.time.sleep"):
+            mods.monitor.run(once=True)
+        session = mods.database.init_db()
+        assert mods.database.already_notified_today(session, title) is False
+        session.close()

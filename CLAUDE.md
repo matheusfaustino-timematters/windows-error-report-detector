@@ -134,7 +134,7 @@ server hostname, timestamp. See `send_teams()` in the script.
 ## Decisions already made (don't revisit without good reason)
 
 - **No process killing** — the watchdog only notifies; humans close dialogs
-- **No email or Slack** — Teams only
+- **Slack** — Teams only
 - **No external HTTP library** — `urllib` keeps the dependency list short
 - **SQLite over a plain text file** — easier to query, handles concurrent
   writes if the script ever runs multiple threads

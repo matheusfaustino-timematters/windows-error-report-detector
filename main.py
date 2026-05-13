@@ -377,14 +377,9 @@ def analyze_process(proc: psutil.Process) -> dict:
     }
 
     try:
-        proc.cpu_percent(interval=None)                        # prime counter
         create_dt  = datetime.fromtimestamp(proc.create_time())
         runtime_min = (datetime.now() - create_dt).total_seconds() / 60
         result["runtime_min"] = round(runtime_min, 1)
-
-        time.sleep(3)                                          # short window
-        cpu      = proc.cpu_percent(interval=None)
-        cpu_idle = cpu < 0.5
 
         windows = get_windows_for_pid(proc.pid)
 
@@ -407,16 +402,6 @@ def analyze_process(proc: psutil.Process) -> dict:
                 result["dialog_title"] = title
                 result["parent_title"] = windows_parent
                 return result
-
-        # ── Check 3: Timeout with no CPU activity ─────────────────────────────
-        if runtime_min > CONFIG["max_runtime_minutes"] and cpu_idle:
-            result["is_stuck"]     = True
-            result["reason"]       = (
-                f"Running {runtime_min:.1f} min with ~0% CPU — "
-                "likely waiting on a hidden dialog"
-            )
-            result["dialog_title"] = f"Excel PID {proc.pid} (timeout)"
-            result["parent_title"] = result["dialog_title"]
 
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
         log.debug("Could not inspect PID %d: %s", proc.pid, e)
